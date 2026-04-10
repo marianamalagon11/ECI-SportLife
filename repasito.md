@@ -383,6 +383,126 @@ Opciones:
 
 ---
 
+ PUNTO 2 — Validaciones de input vs. validaciones de negocio
+Validaciones de input verifican que los datos recibidos tengan la forma correcta, antes de procesarlos. Son técnicas y no requieren consultar la base de datos. Ejemplos: que un campo no esté vacío, que un email tenga @, que un número no sea negativo, que una fecha tenga formato correcto.
+Validaciones de negocio verifican que los datos cumplan las reglas del dominio del problema. Requieren conocer el contexto de la aplicación y generalmente implican consultar la base de datos. Ejemplos: que un usuario no tenga ya un pedido activo, que el stock sea suficiente, que el correo sea institucional de ese dominio específico.
+La diferencia clave es: el input validation ocurre antes de tocar la base de datos; el business validation ocurre después de conocer el estado del sistema.
+
+ PUNTO 3 — Autenticación, Autorización e Integridad
+Autenticación es el proceso de verificar quién eres. El sistema confirma la identidad del usuario, típicamente mediante usuario/contraseña y luego emite un token (JWT). Es el "¿quién eres tú?".
+Autorización es el proceso de verificar qué puedes hacer. Una vez autenticado, el sistema determina si ese usuario tiene permisos para ejecutar una acción específica según su rol. Es el "¿tienes permiso para esto?". En ECIXPRESS: un CLIENTE no puede cambiar el estado del pedido a EN_PREPARACION, aunque esté autenticado.
+Integridad garantiza que los datos no han sido alterados ni corrompidos durante su transmisión o almacenamiento. En APIs REST se logra con HTTPS (TLS), firmas digitales en los JWT, y validaciones de checksum. Es el "¿los datos llegaron tal como fueron enviados?".
+
+PUNTO 5 — Problemas al no separar capas
+Cuando un proyecto no separa correctamente sus capas (presentación, negocio, persistencia) ocurren varios problemas graves:
+Acoplamiento fuerte: cualquier cambio en la base de datos obliga a tocar el código de presentación, generando errores en cascada.
+Imposibilidad de hacer pruebas unitarias: si la lógica de negocio está mezclada con SQL directo o con el controlador HTTP, no puedes probar la lógica sin levantar toda la aplicación.
+Duplicación de código: al no tener servicios reutilizables, la misma validación de stock se repite en múltiples puntos.
+Dificultad para escalar: no puedes reemplazar la base de datos (de MySQL a MongoDB) sin reescribir media aplicación.
+Bajo mantenimiento: el código se vuelve un "espagueti" difícil de entender para nuevos desarrolladores.
+
+Un validador es un componente cuya única responsabilidad es verificar que los datos cumplen ciertas reglas (de input o de negocio) y lanzar excepciones si no. No tiene lógica de negocio propia. Ejemplo: StockValidator, EmailValidator.
+Un servicio es el componente que contiene la lógica de negocio central. Orquesta llamadas a repositorios, otros servicios y validadores para cumplir un caso de uso completo. Ejemplo: PedidoService que valida stock, crea el pedido y actualiza el stock.
+Una utilidad es una clase con métodos estáticos o de ayuda que realizan operaciones técnicas transversales sin lógica de negocio. No conocen el dominio. Ejemplo: QRCodeUtil que genera o lee un código QR, JwtUtil que firma o verifica un token, DateUtil.
+La diferencia clave: el servicio sabe de negocio, el validador sabe de reglas, la utilidad sabe de técnica.
+
+Fases de TDD:
+Red (rojo): Escribes las pruebas antes de que exista el código. Todas fallan porque la funcionalidad aún no existe. Por ejemplo:
+java@Test
+void deberiaCrearPedidoExitosamente() {
+// Arrange: usuario sin pedido activo, productos con stock
+// Act: llamar crearPedido()
+// Assert: estado debe ser CREADO, total debe calcularse
+// FALLA porque PedidoService no existe todavía
+}
+Green (verde): Escribes el mínimo código necesario para que las pruebas pasen. No importa si es feo, el objetivo es verde.
+Refactor: Limpias y mejoras el código sin romper las pruebas. Extraes métodos, aplicas patrones, mejoras nombres.
+
+Las pruebas garantizan el cumplimiento de las reglas de negocio porque actúan como contrato ejecutable: cada regla definida en el caso de estudio ("un usuario solo puede tener un pedido activo") se convierte en una prueba que falla si esa regla deja de cumplirse. Cuando alguien modifica el código y rompe una regla inadvertidamente, las pruebas lo detectan antes del despliegue.
+La integridad del sistema se garantiza porque las pruebas de integración verifican que todos los componentes trabajan correctamente juntos — el servicio llama al repositorio correcto, el repositorio modifica los datos esperados, y la respuesta HTTP es la correcta para cada caso.
+
+Un pipeline automatiza el ciclo de vida de una aplicación en estas etapas principales:
+1. Source (Fuente): Se dispara cuando se hace un merge a develop. El pipeline toma el código fuente del repositorio como punto de partida.
+2. Build (Construcción): Se compila el código y se resuelven las dependencias (Maven, Gradle, npm). Si el código tiene errores de compilación, el pipeline se detiene aquí. Produce un artefacto ejecutable (JAR, imagen Docker).
+3. Test (Pruebas): Se ejecutan las pruebas unitarias y de integración automáticamente. Se genera el reporte de cobertura (Jacoco). Si alguna prueba falla, el pipeline se detiene.
+4. Code Analysis (Análisis estático): Herramientas como SonarQube analizan el código en busca de vulnerabilidades, code smells y deuda técnica sin ejecutarlo.
+5. Package / Containerize: Se empaqueta la aplicación en una imagen Docker y se sube a un registro de contenedores (Docker Hub, Azure Container Registry).
+6. Deploy (Despliegue): Se despliega el artefacto en el ambiente objetivo (staging, producción). En el caso del bono sería Azure.
+
+¿Qué pasa si una prueba falla en el pipeline?
+No debe permitirse el despliegue bajo ninguna circunstancia. La razón técnica es que una prueba que falla indica que una regla de negocio o una funcionalidad crítica no se comporta como se espera. Desplegar ese código significa llevar un bug conocido a producción, lo cual puede afectar a usuarios reales, corromper datos, o generar pérdidas económicas.
+La filosofía del pipeline es "fail fast" — detectar el problema lo más temprano posible y bloquear el avance. El equipo debe corregir la causa de la falla antes de intentar un nuevo despliegue. Esto protege la integridad del ambiente productivo y mantiene la confianza del cliente en el sistema.
+
+ogging en manejo de errores
+a. ¿Qué información DEBERÍA registrarse?
+Timestamp exacto del evento, nivel del log (INFO, WARN, ERROR), nombre del método o endpoint donde ocurrió, el mensaje descriptivo del error, el stack trace completo en caso de excepción, el ID de correlación de la request (para rastrear el flujo completo), el rol del usuario (sin identificarlo personalmente), y el código HTTP de respuesta.
+b. ¿Qué NO debería registrarse (por seguridad)?
+Contraseñas (ni hasheadas), tokens JWT completos, números de tarjetas de crédito o datos financieros, información personal sensible (correo completo, nombre completo en logs de error técnico), y cualquier dato cubierto por normativas como GDPR o habeas data. Registrar esta información crea vectores de ataque si los logs son accedidos por un actor malicioso.
+
+Los códigos de estado HTTP son como las "notas breves" que un servidor le envía a tu navegador para decirle cómo fue la solicitud. Se dividen en cinco categorías principales según el primer dígito.
+
+Aquí tienes la lista completa y organizada:
+
+1xx: Respuestas Informativas
+El servidor ha recibido la solicitud y el proceso continúa.
+
+100 Continue: Todo va bien hasta ahora; puedes continuar con la solicitud.
+
+101 Switching Protocols: El servidor acepta cambiar de protocolo (ej. pasar de HTTP a WebSockets).
+
+102 Processing: El servidor está trabajando en ello, pero aún no tiene una respuesta definitiva.
+
+2xx: Peticiones Correctas (Éxito)
+La acción fue recibida, entendida y aceptada con éxito.
+
+200 OK: La respuesta estándar para peticiones exitosas.
+
+201 Created: La petición ha sido completada y se ha creado un nuevo recurso.
+
+202 Accepted: La petición ha sido aceptada para procesamiento, pero no se ha completado.
+
+204 No Content: La petición se completó con éxito, pero no hay contenido que enviar (común en APIs).
+
+3xx: Redirecciones
+Se requiere realizar acciones adicionales para completar la solicitud.
+
+301 Moved Permanently: El recurso se ha movido permanentemente a una nueva URL.
+
+302 Found: El recurso se ha movido temporalmente.
+
+304 Not Modified: Indica que el recurso no ha cambiado desde la última vez (se usa para ahorro de caché).
+
+4xx: Errores del Cliente
+Parece que hubo un error por parte de quien hizo la solicitud (tú o tu navegador).
+
+400 Bad Request: El servidor no entiende la petición por un error de sintaxis.
+
+401 Unauthorized: Es necesario autenticarse (usuario/contraseña) para obtener la respuesta.
+
+403 Forbidden: El servidor entiende la petición pero se niega a autorizarla (no tienes permisos).
+
+404 Not Found: El servidor no puede encontrar el recurso solicitado. Es el más famoso de internet.
+
+405 Method Not Allowed: El método usado (ej. POST) no está permitido para esa URL.
+
+408 Request Timeout: El servidor se cansó de esperar la respuesta del cliente.
+
+429 Too Many Requests: Has enviado demasiadas peticiones en poco tiempo (límite de tasa).
+
+5xx: Errores del Servidor
+El servidor falló al intentar completar una solicitud aparentemente válida.
+
+500 Internal Server Error: Un error genérico; algo salió mal en el "cerebro" del servidor.
+
+501 Not Implemented: El servidor no soporta la funcionalidad necesaria para responder.
+
+502 Bad Gateway: El servidor, actuando como puerta de enlace, recibió una respuesta inválida de otro servidor.
+
+503 Service Unavailable: El servidor no está listo para manejar la petición (común por mantenimiento o sobrecarga).
+
+504 Gateway Timeout: El servidor tardó demasiado en responder mientras actuaba como intermediario.
+---
+
 ## Microcontenedores
 
 - **Microcontenedores (contenedores):** Unidades que empaquetan una aplicación con todo lo necesario para ejecutarse.
