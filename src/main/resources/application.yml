@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: ECI-SportLife
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/sportlife
+    username: postgres
+    password: mari2005
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+  data:
+    mongodb:
+      uri: mongodb://localhost:27017/sportlife_transactions
+
+jwt:
+  secret: claveSecretaSuperLargaParaHMACSHA256SportLife2026
+  expiration: 86400000
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
